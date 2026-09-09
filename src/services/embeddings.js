@@ -68,6 +68,24 @@ export async function indexDocument({ doc }) {
   return pieces.length;
 }
 
+// Query ngắn/viết tắt (VD "crm") thường cho điểm cosine không đáng tin cậy — đoạn
+// đúng chứa nguyên văn từ khoá có thể xếp hạng thấp hơn đoạn chỉ "gần nghĩa" chung
+// chung. Cộng thêm điểm cho đoạn nào chứa nguyên văn các từ trong query để bù lại.
+const KEYWORD_BOOST_WEIGHT = 0.25;
+
+function keywordOverlapRatio(query, text) {
+  const tokens = query
+    .toLowerCase()
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2);
+  if (tokens.length === 0) return 0;
+
+  const lowerText = text.toLowerCase();
+  const matched = tokens.filter((t) => lowerText.includes(t)).length;
+  return matched / tokens.length;
+}
+
 export async function searchKnowledge({ companyId, query, productId, limit = 5 }) {
   const filter = { companyId };
   if (productId) filter.productId = productId;
@@ -78,12 +96,16 @@ export async function searchKnowledge({ companyId, query, productId, limit = 5 }
   const [queryVector] = await embedTexts([query]);
 
   return chunks
-    .map((c) => ({
-      docTitle: c.docTitle,
-      source: c.source,
-      text: c.text,
-      score: cosineSimilarity(queryVector, c.embedding),
-    }))
+    .map((c) => {
+      const semanticScore = cosineSimilarity(queryVector, c.embedding);
+      const keywordScore = keywordOverlapRatio(query, c.text);
+      return {
+        docTitle: c.docTitle,
+        source: c.source,
+        text: c.text,
+        score: semanticScore + KEYWORD_BOOST_WEIGHT * keywordScore,
+      };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 }

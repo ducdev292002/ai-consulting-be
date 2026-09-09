@@ -5,14 +5,16 @@ import Company from "./models/Company.js";
 import Product from "./models/Product.js";
 import KnowledgeDoc from "./models/KnowledgeDoc.js";
 import KnowledgeChunk from "./models/KnowledgeChunk.js";
-import CompetitorPrice from "./models/CompetitorPrice.js";
 import Script from "./models/Script.js";
 import Lead from "./models/Lead.js";
 import Order from "./models/Order.js";
 import Conversation from "./models/Conversation.js";
 import { indexDocument } from "./services/embeddings.js";
 
-const SHARED_SCRIPTS = [
+// Kịch bản MẶC ĐỊNH — companyId để null nên dùng chung cho MỌI công ty,
+// không cần copy riêng vào từng công ty. Công ty nào cần khác đi thì tự thêm
+// kịch bản riêng (companyId = công ty đó) qua tab Quản lý kịch bản.
+const DEFAULT_SCRIPTS = [
   {
     stage: "discovery",
     name: "Khám phá nhu cầu",
@@ -30,16 +32,16 @@ const SHARED_SCRIPTS = [
   {
     stage: "advising",
     name: "Tư vấn trung thực khi không phù hợp",
-    situation: "Nhu cầu khách vượt hoặc lệch khỏi những gì công ty có",
+    situation: "Nhu cầu khách vượt hoặc lệch khỏi những gì công ty có, hoặc searchProducts không ra kết quả",
     content:
-      "Nếu không có sản phẩm nào thực sự khớp (ngân sách quá thấp, yêu cầu công ty không đáp ứng được), nói thật với khách và gợi ý hướng khác. Không đẩy sản phẩm không phù hợp chỉ để có đơn.",
+      "Nếu không có sản phẩm nào thực sự khớp (ngân sách quá thấp, yêu cầu công ty không đáp ứng được), nói thật với khách. Nhưng KHÔNG dừng ở đó — nếu khách chưa để lại số điện thoại, chủ động xin SĐT để 'đội ngũ chuyên viên tư vấn trực tiếp tìm giải pháp hoặc báo giá phù hợp hơn'. Gọi updateLead lưu SĐT ngay khi có, chuyển stage sang closing. Không đẩy sản phẩm không phù hợp chỉ để có đơn, nhưng cũng không được buông khách đi tay không nếu còn cơ hội xin thông tin liên hệ.",
   },
   {
     stage: "objection",
     name: "Xử lý từ chối vì giá",
     situation: "Khách nói đắt hoặc so sánh với nơi khác",
     content:
-      "Gọi compareWithMarket trước để lấy số liệu thật. Không hạ giá ngay. So sánh giá trị (chất liệu, bảo hành, hậu mãi) gắn với nhu cầu khách đã kể. Nếu hệ thống chưa có dữ liệu đối thủ thì dùng tìm kiếm web để tra giá thị trường rồi mới so sánh.",
+      "Không hạ giá ngay, không so sánh trực tiếp với đối thủ nào. Gọi getProductDetail để lấy đầy đủ usp/chất liệu/thông số, giải thích rõ VÌ SAO giá ở mức đó xứng đáng — gắn với đúng nhu cầu khách đã kể trước đó (VD: bền hơn, bảo hành dài hơn, phù hợp đúng mục đích sử dụng). Nếu khách vẫn thấy chưa phù hợp ngân sách, mới gợi ý sản phẩm khác trong tầm giá thay vì cố thuyết phục mãi.",
   },
   {
     stage: "objection",
@@ -55,9 +57,16 @@ const SHARED_SCRIPTS = [
     content:
       "Tóm tắt lại mẫu khách chọn, giá sau ưu đãi và lý do phù hợp. Xin khu vực giao hàng và số điện thoại nếu chưa có, rồi gọi createOrder để tạo đơn nháp và xác nhận lại với khách.",
   },
+  {
+    stage: "won",
+    name: "Sau khi đã có đơn hàng",
+    situation: "Đơn hàng đã được tạo, khách nhắn thêm (kể cả 'ok', 'xác nhận', hỏi thêm)",
+    content:
+      "Đơn của khách đã được ghi nhận trong hệ thống — xem chi tiết ở phần ĐƠN HÀNG. KHÔNG tạo đơn mới, KHÔNG tìm kiếm lại sản phẩm khác trừ khi khách nói rõ muốn đổi. Xác nhận ngắn gọn rằng đơn đã nhận, nhân viên sẽ liên hệ trong ít phút, và hỏi khách có cần hỗ trợ gì thêm không.",
+  },
 ];
 
-async function seedCompany({ company, products, docs, competitors }) {
+async function seedCompany({ company, products, docs }) {
   const created = await Company.create(company);
 
   const productMap = {};
@@ -85,18 +94,6 @@ async function seedCompany({ company, products, docs, competitors }) {
     }
   }
 
-  for (const c of competitors) {
-    await CompetitorPrice.create({
-      ...c,
-      companyId: created._id,
-      productId: c.productName2 ? productMap[c.productName2]?._id || null : null,
-    });
-  }
-
-  for (const s of SHARED_SCRIPTS) {
-    await Script.create({ ...s, companyId: created._id });
-  }
-
   console.log(`[seed] Đã tạo công ty "${created.name}"`);
   return created;
 }
@@ -109,12 +106,16 @@ async function seed() {
     Product.deleteMany({}),
     KnowledgeDoc.deleteMany({}),
     KnowledgeChunk.deleteMany({}),
-    CompetitorPrice.deleteMany({}),
     Script.deleteMany({}),
     Lead.deleteMany({}),
     Order.deleteMany({}),
     Conversation.deleteMany({}),
   ]);
+
+  for (const s of DEFAULT_SCRIPTS) {
+    await Script.create({ ...s, companyId: null });
+  }
+  console.log(`[seed] Đã tạo ${DEFAULT_SCRIPTS.length} kịch bản mặc định (dùng chung mọi công ty)`);
 
   await seedCompany({
     company: {
@@ -202,32 +203,6 @@ async function seed() {
           "Da bò thật (full grain, top grain) có lỗ chân lông không đều, mùi da đặc trưng, càng dùng càng lên màu bóng đẹp gọi là patina, tuổi thọ 15-20 năm nếu bảo dưỡng đúng. Da công nghiệp (PU, PVC, Microfiber) có hoa văn in đều nhau, không có mùi da, tuổi thọ trung bình 5-7 năm, dễ bong tróc bề mặt sau 3-5 năm với PU giá rẻ nhưng Microfiber cao cấp thì bền và chống xước tốt hơn da thật. Cách phân biệt nhanh: nhỏ một giọt nước lên bề mặt, da thật hút ẩm và thẫm màu nhẹ, da công nghiệp đọng thành hạt. Bảo dưỡng da thật: lau bụi hàng tuần bằng khăn mềm, dùng dung dịch dưỡng da 3-6 tháng một lần, tránh ánh nắng trực tiếp.",
       },
     ],
-    competitors: [
-      {
-        competitorName: "Đối thủ A (chuỗi nội thất lớn)",
-        productName: "Sofa da 3 chỗ nhập khẩu",
-        productName2: "Sofa da bò Ý Milano 3 chỗ",
-        price: 29000000,
-        source: "Khảo sát showroom 08/2026",
-        note: "Da bò Ý nhưng chỉ mặt tiếp xúc, phần hông và lưng dùng da PU. Bảo hành 3 năm. Không có thiết kế 3D miễn phí.",
-      },
-      {
-        competitorName: "Đối thủ B (xưởng nhỏ)",
-        productName: "Sofa da 3 chỗ",
-        productName2: "Sofa da bò Ý Milano 3 chỗ",
-        price: 18000000,
-        source: "Khảo sát website 08/2026",
-        note: "Da công nghiệp cao cấp, không phải da bò. Khung gỗ công nghiệp. Bảo hành 1 năm, không có chính sách đổi trả.",
-      },
-      {
-        competitorName: "Đối thủ A (chuỗi nội thất lớn)",
-        productName: "Sofa góc L da microfiber",
-        productName2: "Sofa góc L da công nghiệp Aria",
-        price: 16500000,
-        source: "Khảo sát showroom 08/2026",
-        note: "Chất liệu tương đương nhưng giá cao hơn 3.7 triệu, bảo hành bọc chỉ 1 năm.",
-      },
-    ],
   });
 
   await seedCompany({
@@ -294,24 +269,6 @@ async function seed() {
         title: "Chính sách bảo hành và đổi mới TechZone",
         content:
           "Bảo hành chính hãng 24 tháng tại chỗ cho laptop: kỹ thuật viên tới tận nơi trong nội thành trong 48 giờ. Đổi mới máy trong 15 ngày đầu nếu có lỗi nhà sản xuất. Pin và sạc bảo hành 12 tháng. Không bảo hành lỗi do vào nước, rơi vỡ, hoặc tự tháo máy. Hỗ trợ trả góp 0% qua thẻ tín dụng kỳ hạn 6-12 tháng. Miễn phí cài đặt phần mềm chuyên ngành (Adobe, AutoCAD, SolidWorks) và chuyển dữ liệu từ máy cũ. Xuất hoá đơn VAT cho khách doanh nghiệp.",
-      },
-    ],
-    competitors: [
-      {
-        competitorName: "Sàn thương mại điện tử",
-        productName: "Vega Air 14 (hàng nhập khẩu)",
-        productName2: "Laptop Vega Air 14",
-        price: 15900000,
-        source: "Khảo sát 08/2026",
-        note: "Giá rẻ hơn 1 triệu nhưng là hàng nhập khẩu không chính hãng, bảo hành do shop tự bảo hành 12 tháng, không hoá đơn VAT, không có bảo hành tại chỗ.",
-      },
-      {
-        competitorName: "Chuỗi điện máy lớn",
-        productName: "Vega Pro 16 RTX",
-        productName2: "Laptop Vega Pro 16 RTX",
-        price: 41000000,
-        source: "Khảo sát 08/2026",
-        note: "Giá cao hơn 1.5 triệu, bảo hành 24 tháng nhưng phải mang máy tới trung tâm, không có bảo hành tại chỗ và không miễn phí cài phần mềm chuyên ngành.",
       },
     ],
   });

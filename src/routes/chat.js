@@ -34,15 +34,16 @@ router.post("/", async (req, res, next) => {
 
     const key = customerKey.trim();
 
-    const [scripts, lead, conversation] = await Promise.all([
-      Script.find({ companyId }).lean(),
+    const [scripts, lead, conversation, existingOrders] = await Promise.all([
+      Script.find({ $or: [{ companyId: null }, { companyId }] }).lean(),
       Lead.findOne({ companyId, customerKey: key }).lean(),
       Conversation.findOne({ companyId, customerKey: key }),
+      Order.find({ companyId, customerKey: key }).sort({ createdAt: -1 }).lean(),
     ]);
 
     const convo = conversation || new Conversation({ companyId, customerKey: key, messages: [] });
 
-    const instructions = buildInstructions({ company, lead, scripts });
+    const instructions = buildInstructions({ company, lead, scripts, orders: existingOrders });
     const { definitions, runByName } = buildSalesTools({ companyId, customerKey: key });
 
     const tools = definitions.map((t) => ({
@@ -81,8 +82,16 @@ router.post("/", async (req, res, next) => {
           args = {};
         }
 
-        const result = await runByName(call.name, args);
+        let result;
+        try {
+          result = await runByName(call.name, args);
+        } catch (toolErr) {
+          result = { error: `Tool ${call.name} lỗi: ${toolErr.message}` };
+        }
         toolCallLog.push({ name: call.name, args });
+        console.log(
+          `[chat] ${key} -> ${call.name}(${JSON.stringify(args)}) = ${JSON.stringify(result).slice(0, 300)}`
+        );
 
         input.push({
           type: "function_call_output",

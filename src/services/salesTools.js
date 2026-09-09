@@ -1,9 +1,11 @@
+import mongoose from "mongoose";
 import Product from "../models/Product.js";
 import KnowledgeDoc from "../models/KnowledgeDoc.js";
-import CompetitorPrice from "../models/CompetitorPrice.js";
 import Lead, { LEAD_STAGES } from "../models/Lead.js";
 import Order from "../models/Order.js";
 import { searchKnowledge } from "./embeddings.js";
+
+const isValidId = (id) => mongoose.isValidObjectId(id);
 
 const formatProduct = (p) => ({
   productId: String(p._id),
@@ -64,39 +66,15 @@ export function buildSalesTools({ companyId, customerKey }) {
         required: ["productId"],
       },
       run: async ({ productId }) => {
+        if (!isValidId(productId)) {
+          return { error: "productId không hợp lệ. Hãy gọi searchProducts trước để lấy đúng productId thật." };
+        }
         const product = await Product.findOne({ _id: productId, companyId }).lean();
         if (!product) return { error: "Không tìm thấy sản phẩm" };
         const docs = await KnowledgeDoc.find({ companyId, productId }).select("title content source").lean();
         return {
           product: { ...formatProduct(product), specs: product.specs },
           documents: docs.map((d) => ({ title: d.title, source: d.source, content: d.content.slice(0, 3000) })),
-        };
-      },
-    },
-    {
-      name: "compareWithMarket",
-      description:
-        "Lấy dữ liệu giá đối thủ / giá thị trường đã lưu trong hệ thống để so sánh. Dùng khi khách nói đắt hoặc so sánh với nơi khác. Ưu tiên dùng tool này trước khi tìm kiếm web.",
-      parameters: {
-        type: "object",
-        properties: {
-          productId: { type: "string", description: "ID sản phẩm cần so sánh (tuỳ chọn)" },
-        },
-        required: [],
-      },
-      run: async ({ productId }) => {
-        const filter = { companyId };
-        if (productId) filter.productId = productId;
-        const rows = await CompetitorPrice.find(filter).limit(20).lean();
-        return {
-          count: rows.length,
-          competitors: rows.map((r) => ({
-            competitorName: r.competitorName,
-            productName: r.productName,
-            price: r.price,
-            note: r.note,
-            source: r.source,
-          })),
         };
       },
     },
@@ -175,9 +153,18 @@ export function buildSalesTools({ companyId, customerKey }) {
       },
       run: async ({ items, deliveryArea, note }) => {
         const resolved = [];
+        const invalidIds = [];
+
         for (const item of items || []) {
+          if (!isValidId(item.productId)) {
+            invalidIds.push(item.productId);
+            continue;
+          }
           const product = await Product.findOne({ _id: item.productId, companyId }).lean();
-          if (!product) continue;
+          if (!product) {
+            invalidIds.push(item.productId);
+            continue;
+          }
           const price = product.priceAfterDiscount ?? product.price;
           resolved.push({
             productId: product._id,
@@ -187,7 +174,13 @@ export function buildSalesTools({ companyId, customerKey }) {
           });
         }
 
-        if (resolved.length === 0) return { error: "Không có sản phẩm hợp lệ để tạo đơn" };
+        if (resolved.length === 0) {
+          return {
+            error:
+              "Không có sản phẩm hợp lệ để tạo đơn. productId phải lấy từ kết quả searchProducts, không được tự đặt.",
+            invalidIds,
+          };
+        }
 
         const total = resolved.reduce((sum, i) => sum + i.price * i.qty, 0);
         const order = await Order.create({
