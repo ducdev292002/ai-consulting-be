@@ -1,5 +1,6 @@
 import { getOpenAIClient } from "./openaiClient.js";
 import { DOC_SOURCES } from "../models/KnowledgeDoc.js";
+import { chunkText } from "./textChunking.js";
 
 const SCHEMA = {
   name: "cleaned_knowledge",
@@ -24,7 +25,7 @@ const SCHEMA = {
   strict: true,
 };
 
-export async function cleanKnowledgeContent({ rawText, suggestedTitle, sourceUrl, company }) {
+async function cleanKnowledgeChunk({ chunk, suggestedTitle, sourceUrl, company }) {
   const openai = getOpenAIClient();
   const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
@@ -53,8 +54,8 @@ export async function cleanKnowledgeContent({ rawText, suggestedTitle, sourceUrl
   const userContent = [
     suggestedTitle ? `Tiêu đề gốc: ${suggestedTitle}` : "",
     sourceUrl ? `URL nguồn: ${sourceUrl}` : "",
-    "Nội dung thô cần làm sạch:",
-    rawText.slice(0, 20000),
+    "Nội dung thô cần làm sạch (có thể chỉ là MỘT PHẦN của tài liệu dài hơn bị cắt đoạn):",
+    chunk,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -72,4 +73,26 @@ export async function cleanKnowledgeContent({ rawText, suggestedTitle, sourceUrl
   const raw = completion.choices?.[0]?.message?.content;
   if (!raw) throw new Error("AI không trả về kết quả làm sạch nội dung");
   return JSON.parse(raw);
+}
+
+export async function cleanKnowledgeContent({ rawText, suggestedTitle, sourceUrl, company, onProgress }) {
+  const chunks = chunkText(rawText);
+  const results = [];
+  for (let i = 0; i < chunks.length; i++) {
+    results.push(await cleanKnowledgeChunk({ chunk: chunks[i], suggestedTitle, sourceUrl, company }));
+    onProgress?.({ done: i + 1, total: chunks.length });
+  }
+
+  const usefulResults = results.filter((r) => r.useful);
+  if (usefulResults.length === 0) {
+    return results[0] || { useful: false, title: "", category: "web", content: "", skipReason: "Không có nội dung hữu ích" };
+  }
+
+  return {
+    useful: true,
+    title: usefulResults[0].title,
+    category: usefulResults[0].category,
+    content: usefulResults.map((r) => r.content).join("\n\n"),
+    skipReason: "",
+  };
 }

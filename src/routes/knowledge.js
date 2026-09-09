@@ -8,6 +8,7 @@ import { fetchUrlAsText } from "../services/fetchUrl.js";
 import { crawlWebsite } from "../services/crawlSite.js";
 import { cleanKnowledgeContent } from "../services/contentCleaning.js";
 import { indexDocument } from "../services/embeddings.js";
+import { startProgressStream } from "../services/streamProgress.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
@@ -86,19 +87,29 @@ router.post("/upload", upload.single("file"), async (req, res, next) => {
     const company = await Company.findById(req.body.companyId).lean();
     const suggestedTitle = req.body.title?.trim() || req.file.originalname.replace(/\.[^.]+$/, "");
 
-    const cleaned = await cleanKnowledgeContent({ rawText, suggestedTitle, company });
+    const stream = startProgressStream(res);
+    try {
+      const cleaned = await cleanKnowledgeContent({
+        rawText,
+        suggestedTitle,
+        company,
+        onProgress: (p) => stream.progress(p),
+      });
 
-    res.json({
-      proposal: {
-        title: cleaned.title || suggestedTitle,
-        category: req.body.source && DOC_SOURCES.includes(req.body.source) ? req.body.source : cleaned.category,
-        content: cleaned.content,
-        sourceUrl: "",
-        productId: req.body.productId || null,
-        useful: cleaned.useful,
-        skipReason: cleaned.skipReason,
-      },
-    });
+      stream.done({
+        proposal: {
+          title: cleaned.title || suggestedTitle,
+          category: req.body.source && DOC_SOURCES.includes(req.body.source) ? req.body.source : cleaned.category,
+          content: cleaned.content,
+          sourceUrl: "",
+          productId: req.body.productId || null,
+          useful: cleaned.useful,
+          skipReason: cleaned.skipReason,
+        },
+      });
+    } catch (err) {
+      stream.error(err.message);
+    }
   } catch (err) {
     next(err);
   }
@@ -153,32 +164,39 @@ router.post("/crawl", async (req, res, next) => {
       Company.findById(companyId).lean(),
     ]);
 
-    const proposals = [];
-    for (const page of pages) {
-      try {
-        const cleaned = await cleanKnowledgeContent({
-          rawText: page.text,
-          suggestedTitle: page.title,
-          sourceUrl: page.url,
-          company,
-        });
-        const existing = await KnowledgeDoc.findOne({ companyId, sourceUrl: page.url }).select("_id").lean();
+    const stream = startProgressStream(res);
+    try {
+      const proposals = [];
+      for (let i = 0; i < pages.length; i++) {
+        const page = pages[i];
+        try {
+          const cleaned = await cleanKnowledgeContent({
+            rawText: page.text,
+            suggestedTitle: page.title,
+            sourceUrl: page.url,
+            company,
+          });
+          const existing = await KnowledgeDoc.findOne({ companyId, sourceUrl: page.url }).select("_id").lean();
 
-        proposals.push({
-          url: page.url,
-          title: cleaned.title || page.title,
-          category: cleaned.category,
-          content: cleaned.content,
-          useful: cleaned.useful,
-          skipReason: cleaned.skipReason,
-          existingDocId: existing?._id || null,
-        });
-      } catch (err) {
-        errors.push({ url: page.url, error: `Lỗi làm sạch: ${err.message}` });
+          proposals.push({
+            url: page.url,
+            title: cleaned.title || page.title,
+            category: cleaned.category,
+            content: cleaned.content,
+            useful: cleaned.useful,
+            skipReason: cleaned.skipReason,
+            existingDocId: existing?._id || null,
+          });
+        } catch (err) {
+          errors.push({ url: page.url, error: `Lỗi làm sạch: ${err.message}` });
+        }
+        stream.progress({ done: i + 1, total: pages.length });
       }
-    }
 
-    res.json({ totalDiscovered, pagesFetched: pages.length, proposals, errors });
+      stream.done({ totalDiscovered, pagesFetched: pages.length, proposals, errors });
+    } catch (err) {
+      stream.error(err.message);
+    }
   } catch (err) {
     next(err);
   }

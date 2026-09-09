@@ -13,6 +13,7 @@ const leadSchema = new mongoose.Schema(
     phone: { type: String, default: "" },
     area: { type: String, default: "" },
     stage: { type: String, enum: LEAD_STAGES, default: "discovery" },
+    noProgressStreak: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

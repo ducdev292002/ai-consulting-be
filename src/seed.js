@@ -58,6 +58,14 @@ const DEFAULT_SCRIPTS = [
       "Tóm tắt lại mẫu khách chọn, giá sau ưu đãi và lý do phù hợp. Xin khu vực giao hàng và số điện thoại nếu chưa có, rồi gọi createOrder để tạo đơn nháp và xác nhận lại với khách.",
   },
   {
+    stage: "closing",
+    name: "Đã lấy được SĐT nhưng chưa có gói/sản phẩm cụ thể để chốt",
+    situation:
+      "Đã xin được SĐT do không có gói/sản phẩm khớp đúng nhu cầu (không phải do khách vừa chọn mua) — KHÔNG có đơn hàng nào để tạo",
+    content:
+      "Xác nhận ngắn gọn đã ghi nhận thông tin (nhu cầu, ngân sách, SĐT), nói rõ chuyên viên sẽ liên hệ tư vấn/báo giá phù hợp trong thời gian sớm. TUYỆT ĐỐI không lặp lại các gói/sản phẩm đã giới thiệu ở lượt trước, không tiếp tục chào mời hay hỏi thêm chi tiết trừ khi khách chủ động hỏi điều gì đó MỚI. Nếu khách chỉ đáp 'ok'/'không'/im lặng, chỉ cần đáp ngắn gọn kiểu cảm ơn và dừng, không cần viết dài.",
+  },
+  {
     stage: "won",
     name: "Sau khi đã có đơn hàng",
     situation: "Đơn hàng đã được tạo, khách nhắn thêm (kể cả 'ok', 'xác nhận', hỏi thêm)",

@@ -7,6 +7,8 @@ import { searchKnowledge } from "./embeddings.js";
 
 const isValidId = (id) => mongoose.isValidObjectId(id);
 
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const formatProduct = (p) => ({
   productId: String(p._id),
   name: p.name,
@@ -15,10 +17,13 @@ const formatProduct = (p) => ({
   priceAfterDiscount: p.priceAfterDiscount,
   size: p.size,
   material: p.material,
+  description: p.description,
+  specs: p.specs,
   bestFor: p.bestFor,
   notFor: p.notFor,
   usp: p.usp,
   stock: p.stock,
+  hasImage: Boolean(p.imageUrl),
 });
 
 export function buildSalesTools({ companyId, customerKey }) {
@@ -38,18 +43,39 @@ export function buildSalesTools({ companyId, customerKey }) {
       },
       run: async ({ keyword, maxPrice, minPrice }) => {
         const filter = { companyId };
-        if (keyword) {
-          filter.$or = [
-            { name: new RegExp(keyword, "i") },
-            { category: new RegExp(keyword, "i") },
-            { material: new RegExp(keyword, "i") },
-          ];
+        const andClauses = [];
+
+        // Khách nói tự nhiên (VD "sofa bò cao cấp") hiếm khi khớp NGUYÊN VĂN với tên/danh mục/
+        // chất liệu sản phẩm trong hệ thống — nếu chỉ so khớp cả cụm sẽ ra 0 kết quả rất thường
+        // xuyên (ảnh hưởng dây chuyền: không có productId thật để gọi getProductDetail/tạo đơn/
+        // gửi ảnh). Nên khớp theo TỪNG TỪ có nghĩa (OR), khớp cả trường description, để tìm ra
+        // đúng sản phẩm ngay cả khi khách không dùng đúng thuật ngữ trong hệ thống.
+        if (keyword?.trim()) {
+          const words = keyword
+            .trim()
+            .split(/\s+/)
+            .filter((w) => w.length > 1);
+          const fields = ["name", "category", "material", "description"];
+          const orClauses = [];
+          for (const word of words.length ? words : [keyword.trim()]) {
+            const re = new RegExp(escapeRegex(word), "i");
+            for (const field of fields) orClauses.push({ [field]: re });
+          }
+          andClauses.push({ $or: orClauses });
         }
+
+        // Rất nhiều sản phẩm không có giá niêm yết sẵn (price=0, báo giá theo yêu cầu) — lọc
+        // theo ngân sách TUYỆT ĐỐI không được loại các sản phẩm này ra, nếu không lọc giá sẽ
+        // luôn trả về rỗng cho toàn bộ danh mục kiểu báo giá riêng.
         if (maxPrice || minPrice) {
-          filter.price = {};
-          if (maxPrice) filter.price.$lte = maxPrice;
-          if (minPrice) filter.price.$gte = minPrice;
+          const priceRange = {};
+          if (maxPrice) priceRange.$lte = maxPrice;
+          if (minPrice) priceRange.$gte = minPrice;
+          andClauses.push({ $or: [{ price: 0 }, { price: priceRange }] });
         }
+
+        if (andClauses.length) filter.$and = andClauses;
+
         const products = await Product.find(filter).limit(10).lean();
         return { count: products.length, products: products.map(formatProduct) };
       },
@@ -76,6 +102,27 @@ export function buildSalesTools({ companyId, customerKey }) {
           product: { ...formatProduct(product), specs: product.specs },
           documents: docs.map((d) => ({ title: d.title, source: d.source, content: d.content.slice(0, 3000) })),
         };
+      },
+    },
+    {
+      name: "shareProductImage",
+      description:
+        "Gửi ảnh THẬT của một sản phẩm cho khách xem ngay trong khung chat (ảnh sẽ tự hiện ra, không cần chèn link vào lời nhắn). Dùng khi khách hỏi xem ảnh/mẫu cụ thể, hoặc khi hình ảnh sẽ giúp khách hình dung rõ hơn trước khi quyết định. Chỉ gọi khi đã có đúng productId thật từ searchProducts — không tự bịa ảnh.",
+      parameters: {
+        type: "object",
+        properties: {
+          productId: { type: "string", description: "ID sản phẩm lấy từ searchProducts" },
+        },
+        required: ["productId"],
+      },
+      run: async ({ productId }) => {
+        if (!isValidId(productId)) {
+          return { error: "productId không hợp lệ. Hãy gọi searchProducts trước để lấy đúng productId thật." };
+        }
+        const product = await Product.findOne({ _id: productId, companyId }).select("name imageUrl").lean();
+        if (!product) return { error: "Không tìm thấy sản phẩm" };
+        if (!product.imageUrl) return { error: "Sản phẩm này chưa có ảnh trong hệ thống" };
+        return { shared: true, name: product.name, imageUrl: product.imageUrl };
       },
     },
     {
@@ -119,6 +166,33 @@ export function buildSalesTools({ companyId, customerKey }) {
         for (const [key, value] of Object.entries(args)) {
           if (value !== undefined && value !== null && value !== "") update[key] = value;
         }
+
+        // An toàn phía server: KHÔNG dựa vào việc AI "nhớ" gửi đúng stage — thực tế AI hay
+        // quên hoặc gửi lại stage cũ, khiến lead kẹt mãi ở 1 giai đoạn dù đủ điều kiện tiến
+        // tiếp (từng gây lặp vô hạn / trả lời hụt hẫng vì cứ đọc đúng kịch bản của stage cũ).
+        // Tự suy ra stage tối thiểu hợp lý dựa trên dữ liệu THẬT đã có, ghi đè nếu AI gửi
+        // stage thấp hơn mức tối thiểu đó. Không bao giờ hạ cấp xuống thấp hơn.
+        const existing = await Lead.findOne({ companyId, customerKey }).lean();
+        const stageRank = { discovery: 0, advising: 1, objection: 1, closing: 2, won: 3, lost: 3 };
+
+        const finalNeedType = update.needType ?? existing?.needType;
+        const finalBudget = update.budget ?? existing?.budget;
+        const finalPhone = update.phone ?? existing?.phone;
+
+        let minStage = null;
+        if (finalPhone) {
+          minStage = "closing";
+        } else if (finalNeedType && finalBudget) {
+          minStage = "advising";
+        }
+
+        if (minStage) {
+          const candidateStage = update.stage || existing?.stage || "discovery";
+          if ((stageRank[candidateStage] ?? 0) < stageRank[minStage]) {
+            update.stage = minStage;
+          }
+        }
+
         const lead = await Lead.findOneAndUpdate(
           { companyId, customerKey },
           { $set: update, $setOnInsert: { companyId, customerKey } },

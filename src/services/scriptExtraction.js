@@ -1,5 +1,6 @@
 import { getOpenAIClient } from "./openaiClient.js";
 import { LEAD_STAGES } from "../models/Lead.js";
+import { chunkText } from "./textChunking.js";
 
 const STAGE_GUIDE = [
   "discovery = khách mới nhắn/chưa rõ nhu cầu, đang khám phá",
@@ -51,13 +52,13 @@ const SCHEMA = {
   strict: true,
 };
 
-export async function extractScriptsFromText({ text, company, existingScripts }) {
+async function extractScriptsFromChunk({ chunk, company, existingScripts }) {
   const openai = getOpenAIClient();
   const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
   const instructions = [
     "Bạn là chuyên gia phân tích kịch bản bán hàng cho hệ thống AI tư vấn bán hàng qua chat.",
-    "Cho văn bản kịch bản dưới đây (có thể lộn xộn: gồm cả lời thoại mẫu, ghi chú chiến lược, hoặc nội dung quảng cáo), hãy tách thành các KỊCH BẢN HỘI THOẠI cụ thể mà AI có thể áp dụng đúng 1 tình huống trong 1 lượt chat.",
+    "Cho văn bản kịch bản dưới đây (có thể lộn xộn: gồm cả lời thoại mẫu, ghi chú chiến lược, hoặc nội dung quảng cáo — và có thể chỉ là MỘT PHẦN của tài liệu dài hơn bị cắt đoạn, cứ tách hết những gì nhận diện được trong đoạn này), hãy tách thành các KỊCH BẢN HỘI THOẠI cụ thể mà AI có thể áp dụng đúng 1 tình huống trong 1 lượt chat.",
     "",
     "Với mỗi kịch bản tách được:",
     "- name: tên ngắn gọn",
@@ -87,7 +88,7 @@ export async function extractScriptsFromText({ text, company, existingScripts })
     temperature: 0.2,
     messages: [
       { role: "system", content: instructions },
-      { role: "user", content: text.slice(0, 20000) },
+      { role: "user", content: chunk },
     ],
     response_format: { type: "json_schema", json_schema: SCHEMA },
   });
@@ -97,4 +98,19 @@ export async function extractScriptsFromText({ text, company, existingScripts })
 
   const parsed = JSON.parse(raw);
   return { scripts: parsed.scripts || [], skipped: parsed.skipped || [] };
+}
+
+export async function extractScriptsFromText({ text, company, existingScripts, onProgress }) {
+  const chunks = chunkText(text);
+
+  const results = [];
+  for (let i = 0; i < chunks.length; i++) {
+    results.push(await extractScriptsFromChunk({ chunk: chunks[i], company, existingScripts }));
+    onProgress?.({ done: i + 1, total: chunks.length });
+  }
+
+  return {
+    scripts: results.flatMap((r) => r.scripts),
+    skipped: results.flatMap((r) => r.skipped),
+  };
 }

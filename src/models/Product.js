@@ -10,12 +10,14 @@ const productSchema = new mongoose.Schema(
     priceAfterDiscount: { type: Number, default: null },
     size: { type: String, default: "" },
     material: { type: String, default: "" },
+    description: { type: String, default: "" },
     specs: { type: String, default: "" },
     bestFor: { type: [String], default: [] },
     notFor: { type: [String], default: [] },
     usp: { type: [String], default: [] },
     stock: { type: Number, default: 0 },
     imageUrl: { type: String, default: "" },
+    sourceUrl: { type: String, default: "" },
   },
   { timestamps: true }
 );

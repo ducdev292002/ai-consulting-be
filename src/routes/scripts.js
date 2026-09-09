@@ -4,6 +4,7 @@ import Script from "../models/Script.js";
 import Company from "../models/Company.js";
 import { extractTextFromFile } from "../services/extractText.js";
 import { extractScriptsFromText } from "../services/scriptExtraction.js";
+import { startProgressStream } from "../services/streamProgress.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
@@ -53,13 +54,18 @@ router.post("/extract", upload.single("file"), async (req, res, next) => {
       Script.find({ $or: [{ companyId: null }, { companyId }] }).select("name").lean(),
     ]);
 
-    const result = await extractScriptsFromText({
-      text,
-      company,
-      existingScripts: existing.map((s) => s.name),
-    });
-
-    res.json(result);
+    const stream = startProgressStream(res);
+    try {
+      const result = await extractScriptsFromText({
+        text,
+        company,
+        existingScripts: existing.map((s) => s.name),
+        onProgress: (p) => stream.progress(p),
+      });
+      stream.done(result);
+    } catch (err) {
+      stream.error(err.message);
+    }
   } catch (err) {
     next(err);
   }
