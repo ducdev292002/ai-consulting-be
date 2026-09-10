@@ -370,6 +370,19 @@ router.post("/", async (req, res, next) => {
     if (convo.mode === "human") {
       convo.messages.push({ role: "user", content: message.trim() });
       await convo.save();
+
+      // Không có AI chạy ở mode "human" nên không tool nào tự lưu thông tin khách — vẫn cần
+      // tách SĐT từ tin nhắn khách để phiếu khách không bị bỏ trống dù nhân viên đang xử lý.
+      const extractedPhone = extractVietnamesePhone(message);
+      if (extractedPhone && extractedPhone !== (lead?.phone || "")) {
+        const { runByName } = buildSalesTools({ companyId, customerKey: key });
+        try {
+          await runByName("updateLead", { phone: extractedPhone });
+        } catch {
+          // bỏ qua — chỉ là lớp an toàn bổ sung
+        }
+      }
+
       const [currentLead, latestOrder] = await Promise.all([
         Lead.findOne({ companyId, customerKey: key }).lean(),
         Order.findOne({ companyId, customerKey: key }).sort({ createdAt: -1 }).lean(),
