@@ -67,11 +67,18 @@ export function buildSalesTools({ companyId, customerKey }) {
         // Rất nhiều sản phẩm không có giá niêm yết sẵn (price=0, báo giá theo yêu cầu) — lọc
         // theo ngân sách TUYỆT ĐỐI không được loại các sản phẩm này ra, nếu không lọc giá sẽ
         // luôn trả về rỗng cho toàn bộ danh mục kiểu báo giá riêng.
+        // So ngân sách với GIÁ THỰC TẾ khách phải trả (priceAfterDiscount nếu có, không thì price)
+        // — không được so với giá gốc price khi đang có khuyến mãi, nếu không sản phẩm đang giảm
+        // giá về đúng tầm ngân sách khách sẽ bị lọc mất oan (giá gốc cao hơn ngân sách dù giá bán
+        // thực tế đã nằm trong tầm).
         if (maxPrice || minPrice) {
-          const priceRange = {};
-          if (maxPrice) priceRange.$lte = maxPrice;
-          if (minPrice) priceRange.$gte = minPrice;
-          andClauses.push({ $or: [{ price: 0 }, { price: priceRange }] });
+          const effectivePrice = { $ifNull: ["$priceAfterDiscount", "$price"] };
+          const cmp = [];
+          if (maxPrice) cmp.push({ $lte: [effectivePrice, maxPrice] });
+          if (minPrice) cmp.push({ $gte: [effectivePrice, minPrice] });
+          andClauses.push({
+            $or: [{ price: 0 }, { $expr: cmp.length > 1 ? { $and: cmp } : cmp[0] }],
+          });
         }
 
         if (andClauses.length) filter.$and = andClauses;

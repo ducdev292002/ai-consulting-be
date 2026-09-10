@@ -5,6 +5,7 @@ import Company from "../models/Company.js";
 import { extractTextFromFile } from "../services/extractText.js";
 import { extractScriptsFromText } from "../services/scriptExtraction.js";
 import { startProgressStream } from "../services/streamProgress.js";
+import { DEFAULT_SCRIPTS } from "../data/defaultScripts.js";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
@@ -66,6 +67,31 @@ router.post("/extract", upload.single("file"), async (req, res, next) => {
     } catch (err) {
       stream.error(err.message);
     }
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Áp dụng bộ kịch bản gợi ý sẵn làm kịch bản RIÊNG cho 1 công ty cụ thể (companyId của công ty đó,
+// KHÔNG phải companyId: null) — dùng khi công ty mới chưa có kịch bản nào để AI chạy được luôn.
+// Chỉ tạo những kịch bản (stage + name) công ty đó CHƯA có (kể cả đã có sẵn từ bộ mặc định chung),
+// để bấm nhiều lần không bị trùng.
+router.post("/apply-defaults", async (req, res, next) => {
+  try {
+    const { companyId } = req.body;
+    if (!companyId) return res.status(400).json({ error: "Thiếu companyId" });
+
+    const existing = await Script.find({ $or: [{ companyId: null }, { companyId }] })
+      .select("stage name")
+      .lean();
+    const existingKeys = new Set(existing.map((s) => `${s.stage}::${s.name}`));
+
+    const toCreate = DEFAULT_SCRIPTS.filter((s) => !existingKeys.has(`${s.stage}::${s.name}`));
+    if (toCreate.length > 0) {
+      await Script.insertMany(toCreate.map((s) => ({ ...s, companyId })));
+    }
+
+    res.json({ created: toCreate.length, skipped: DEFAULT_SCRIPTS.length - toCreate.length });
   } catch (err) {
     next(err);
   }
