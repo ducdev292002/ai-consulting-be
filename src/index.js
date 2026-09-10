@@ -10,6 +10,7 @@ import leadsRouter from "./routes/leads.js";
 import ordersRouter from "./routes/orders.js";
 import chatRouter from "./routes/chat.js";
 import conversationsRouter from "./routes/conversations.js";
+import statsRouter from "./routes/stats.js";
 
 const app = express();
 
@@ -39,6 +40,7 @@ app.use("/api/leads", leadsRouter);
 app.use("/api/orders", ordersRouter);
 app.use("/api/chat", chatRouter);
 app.use("/api/conversations", conversationsRouter);
+app.use("/api/stats", statsRouter);
 
 app.use((err, req, res, next) => {
   console.error(err);

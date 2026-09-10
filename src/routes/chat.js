@@ -44,12 +44,52 @@ function dedupeSegments(segments) {
   });
 }
 
+// AI đôi khi bỏ qua hướng dẫn tách "|||" và trả về nguyên 1 đoạn văn dài — prompt không đủ tin
+// cậy để ép 100% (giống các trường hợp khác đã gặp). An toàn phía server: CHỈ khi KHÔNG có "|||"
+// và đoạn văn đủ dài mới tự tách theo câu thành nhiều tin nhắn ngắn hơn. Không đụng tới nhánh
+// "|||" hiện có (vẫn là đường xử lý chính, ổn định) để tránh phát sinh bug ở luồng đang chạy tốt.
+const AUTO_SPLIT_MIN_LENGTH = 220;
+
+// Tách câu theo dấu . ! ? nhưng không tách ở giữa số (VD "100.000", "1.5 triệu", "3.000 VNĐ") —
+// chỉ coi là hết câu khi dấu câu KHÔNG bị theo ngay sau bởi 1 chữ số.
+function splitSentences(text) {
+  const matches = text.match(/[^.!?]+(?:[.!?]+(?!\d)|$)/g);
+  return (matches || [text]).map((s) => s.trim()).filter(Boolean);
+}
+
+// Gộp các câu liền nhau thành từng "tin nhắn" có độ dài vừa phải (không quá 1 câu ngắn cụt lủn,
+// không quá dài dồn cục) — mô phỏng cách nhắn tin thật nhiều tin ngắn liên tiếp.
+function groupSentencesIntoBubbles(sentences, targetLen = 140) {
+  const bubbles = [];
+  let current = "";
+  for (const sentence of sentences) {
+    if (current && current.length + sentence.length + 1 > targetLen) {
+      bubbles.push(current.trim());
+      current = sentence;
+    } else {
+      current = current ? `${current} ${sentence}` : sentence;
+    }
+  }
+  if (current) bubbles.push(current.trim());
+  return bubbles;
+}
+
 function splitIntoSegments(reply) {
-  const segments = reply
-    .split("|||")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  return dedupeSegments(segments);
+  if (reply.includes("|||")) {
+    const segments = reply
+      .split("|||")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return dedupeSegments(segments);
+  }
+
+  const trimmed = reply.trim();
+  if (trimmed.length <= AUTO_SPLIT_MIN_LENGTH) return [trimmed].filter(Boolean);
+
+  const sentences = splitSentences(trimmed);
+  if (sentences.length <= 1) return [trimmed].filter(Boolean);
+
+  return dedupeSegments(groupSentencesIntoBubbles(sentences));
 }
 
 // AI đôi khi né gọi shareProductImage dù khách đã hỏi thẳng xem ảnh (nhất là hội thoại dài,
