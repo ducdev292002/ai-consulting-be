@@ -12,6 +12,9 @@ const router = Router();
 
 const MAX_TOOL_ROUNDS = 6;
 const WEB_SEARCH_ENABLED = process.env.ENABLE_WEB_SEARCH !== "false";
+// Số tin nhắn gần nhất tối đa gửi cho AI mỗi lượt — hội thoại ngắn hơn ngưỡng này không bị ảnh
+// hưởng gì (gửi đủ như cũ). Chỉ hội thoại dài mới bị cắt bớt phần lịch sử xa để tối ưu chi phí.
+const HISTORY_WINDOW = 30;
 
 function extractReply(response) {
   if (response.output_text) return response.output_text.trim();
@@ -202,11 +205,27 @@ async function generateAiReply({
     }
   }
 
-  const input = convo.messages.map((m) => ({
+  const fullInput = convo.messages.map((m) => ({
     role: m.role === "staff" ? "assistant" : m.role,
     content:
       m.role === "staff" ? `[Nhân viên${m.staffName ? " " + m.staffName : ""} đã trả lời khách]: ${m.content}` : m.content,
   }));
+
+  // Tối ưu chi phí/tốc độ cho hội thoại dài: hội thoại càng dài, lịch sử gửi lại cho AI mỗi lượt
+  // càng phình to (và bị nhân lên theo từng vòng gọi tool trong CÙNG lượt) — không giới hạn sẽ ngày
+  // càng chậm/tốn kém, có thể vượt giới hạn ngữ cảnh model. Chỉ gửi HISTORY_WINDOW tin gần nhất khi
+  // hội thoại vượt ngưỡng, kèm 1 dòng lưu ý cho AI biết đã lược bớt (dùng bản tóm tắt cache nếu có,
+  // để không mất bối cảnh quan trọng — không gọi AI tóm tắt thêm ở đây để tránh phát sinh chi phí).
+  const input = fullInput.length > HISTORY_WINDOW ? fullInput.slice(-HISTORY_WINDOW) : fullInput;
+  if (fullInput.length > HISTORY_WINDOW) {
+    const hiddenCount = fullInput.length - HISTORY_WINDOW;
+    instructions +=
+      `\n\nLƯU Ý: hội thoại này đã diễn ra ${hiddenCount} tin nhắn trước đó KHÔNG được hiển thị lại bên dưới ` +
+      "(đã lược bớt để tối ưu tốc độ/chi phí) — bạn chỉ thấy các tin gần nhất. " +
+      (convo.summary
+        ? `Đây là tóm tắt phần đã lược bớt: ${convo.summary}`
+        : "Nếu cần bối cảnh phần đã lược bớt, dựa vào PHIẾU THÔNG TIN KHÁCH và ĐƠN HÀNG ở trên (đã ghi lại đầy đủ những gì khách cung cấp).");
+  }
 
   const openai = getOpenAIClient();
   const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";

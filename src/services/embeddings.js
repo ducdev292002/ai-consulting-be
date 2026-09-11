@@ -15,8 +15,25 @@ export function chunkText(text) {
     let end = Math.min(start + CHUNK_SIZE, clean.length);
 
     if (end < clean.length) {
-      const breakPoint = clean.lastIndexOf("\n", end);
-      if (breakPoint > start + CHUNK_SIZE / 2) end = breakPoint;
+      // Ưu tiên cắt tại ranh giới ĐOẠN VĂN (\n\n), rồi tới CUỐI CÂU (. ! ?), rồi mới tới
+      // xuống dòng đơn — tránh cắt ngang giữa 1 câu/1 ý làm giảm chất lượng tra cứu sau này
+      // (bản cũ chỉ cắt theo dòng đơn, dễ đứt giữa câu dài).
+      const searchZoneStart = start + CHUNK_SIZE / 2;
+      const paraBreak = clean.lastIndexOf("\n\n", end);
+
+      let sentenceBreak = -1;
+      const zone = clean.slice(searchZoneStart, end);
+      const sentenceEnds = [...zone.matchAll(/[.!?]\s/g)];
+      if (sentenceEnds.length > 0) {
+        const last = sentenceEnds[sentenceEnds.length - 1];
+        sentenceBreak = searchZoneStart + last.index + 1;
+      }
+
+      const lineBreak = clean.lastIndexOf("\n", end);
+
+      if (paraBreak > searchZoneStart) end = paraBreak;
+      else if (sentenceBreak > searchZoneStart) end = sentenceBreak;
+      else if (lineBreak > searchZoneStart) end = lineBreak;
     }
 
     chunks.push(clean.slice(start, end).trim());
@@ -86,6 +103,39 @@ function keywordOverlapRatio(query, text) {
   return matched / tokens.length;
 }
 
+function normalizeForDedup(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "");
+}
+
+// Các đoạn tri thức liền kề của cùng 1 tài liệu bị chồng lấn CHUNK_OVERLAP ký tự — khi cả 2 đoạn
+// cùng khớp query, kết quả trả về dễ có 2 đoạn gần như trùng nội dung, tốn chỗ và khiến AI đọc
+// lặp thông tin. Chỉ giữ đoạn điểm cao hơn nếu 2 đoạn có tỉ lệ từ trùng nhau quá cao.
+function dedupePassages(sortedResults, limit) {
+  const kept = [];
+  const seenWordSets = [];
+  for (const item of sortedResults) {
+    const words = new Set(
+      normalizeForDedup(item.text)
+        .split(/\W+/)
+        .filter((w) => w.length > 2)
+    );
+    const isDuplicate = seenWordSets.some((prev) => {
+      const overlap = [...words].filter((w) => prev.has(w)).length;
+      const smaller = Math.min(words.size, prev.size) || 1;
+      return overlap / smaller > 0.75;
+    });
+    if (!isDuplicate) {
+      kept.push(item);
+      seenWordSets.push(words);
+      if (kept.length >= limit) break;
+    }
+  }
+  return kept;
+}
+
 export async function searchKnowledge({ companyId, query, productId, limit = 5 }) {
   const filter = { companyId };
   if (productId) filter.productId = productId;
@@ -95,7 +145,7 @@ export async function searchKnowledge({ companyId, query, productId, limit = 5 }
 
   const [queryVector] = await embedTexts([query]);
 
-  return chunks
+  const sorted = chunks
     .map((c) => {
       const semanticScore = cosineSimilarity(queryVector, c.embedding);
       const keywordScore = keywordOverlapRatio(query, c.text);
@@ -106,6 +156,7 @@ export async function searchKnowledge({ companyId, query, productId, limit = 5 }
         score: semanticScore + KEYWORD_BOOST_WEIGHT * keywordScore,
       };
     })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
+    .sort((a, b) => b.score - a.score);
+
+  return dedupePassages(sorted, limit);
 }
