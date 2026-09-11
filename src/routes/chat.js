@@ -53,11 +53,34 @@ function dedupeSegments(segments) {
 // "|||" hiện có (vẫn là đường xử lý chính, ổn định) để tránh phát sinh bug ở luồng đang chạy tốt.
 const AUTO_SPLIT_MIN_LENGTH = 220;
 
-// Tách câu theo dấu . ! ? nhưng không tách ở giữa số (VD "100.000", "1.5 triệu", "3.000 VNĐ") —
+// Tách câu theo dấu . ! ? nhưng không tách ở giữa số (VD "100.000", "1.5 triệu", "3.000m²") —
 // chỉ coi là hết câu khi dấu câu KHÔNG bị theo ngay sau bởi 1 chữ số.
+// Lưu ý: dùng vòng lặp quét thủ công thay vì regex kiểu [^.!?]+ — cách đó từng có lỗi thật đã gặp:
+// [^.!?] LOẠI TRỪ hẳn ký tự chấm ra khỏi phần "thân câu" thường, nên khi gặp 1 dấu chấm được bảo vệ
+// (đứng giữa số, VD "3.000"), regex không có chỗ nào chứa được ký tự đó → dấu chấm và phần trước nó
+// bị rơi mất, số bị cắt đôi (VD "3.000m²" bị tách thành mất "3." và còn lại "000m²" đứng riêng).
 function splitSentences(text) {
-  const matches = text.match(/[^.!?]+(?:[.!?]+(?!\d)|$)/g);
-  return (matches || [text]).map((s) => s.trim()).filter(Boolean);
+  const sentences = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "." || ch === "!" || ch === "?") {
+      const nextChar = text[i + 1];
+      const followedByDigit = nextChar !== undefined && /\d/.test(nextChar);
+      if (!followedByDigit) {
+        let j = i + 1;
+        while (j < text.length && /[.!?]/.test(text[j])) j++;
+        sentences.push(text.slice(start, j).trim());
+        start = j;
+        i = j - 1;
+      }
+    }
+  }
+  if (start < text.length) {
+    const rest = text.slice(start).trim();
+    if (rest) sentences.push(rest);
+  }
+  return sentences.length > 0 ? sentences.filter(Boolean) : [text.trim()].filter(Boolean);
 }
 
 // Gộp các câu liền nhau thành từng "tin nhắn" có độ dài vừa phải (không quá 1 câu ngắn cụt lủn,
