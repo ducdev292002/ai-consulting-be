@@ -363,7 +363,57 @@ async function generateAiReply({
     }
   }
 
-  const reply = orderFallbackReply || extractReply(response);
+  // AI đôi khi TỰ TUYÊN BỐ đơn hàng "đã được ghi nhận" trong câu trả lời dù KHÔNG hề gọi tool
+  // createOrder (và lớp an toàn tạo đơn ở trên cũng không tự tạo được, thường vì searchProducts
+  // trả về NHIỀU sản phẩm khớp mơ hồ — VD tìm "giường Nola" ra cả chục sản phẩm khác chứa chữ
+  // "giường" — nên không dám đoán). Đây là lời hứa giả với khách, rất nguy hiểm (khách tưởng đã
+  // mua xong, không ai theo dõi đơn thật). An toàn phía server: nếu phát hiện câu trả lời tuyên bố
+  // đơn đã ghi nhận mà thực tế KHÔNG có đơn nào được tạo (lượt này lẫn trước đó), ghi đè bằng câu
+  // hỏi làm rõ — liệt kê tên các sản phẩm khớp nếu có nhiều, để khách chọn đúng 1 mẫu trước khi tạo đơn.
+  const FALSE_ORDER_CLAIM_PATTERN =
+    /(đơn hàng|đơn của (anh\/chị|bạn|mình)|đơn)[^.!?\n]{0,30}(đã (ghi nhận|tạo|lên|đặt|xác nhận)|được (ghi nhận|tạo|xác nhận))/i;
+  let orderClarifyReply = null;
+  if (
+    !alreadyMadeOrderThisTurn &&
+    !orderFallbackReply &&
+    !(existingOrders && existingOrders.length > 0) &&
+    (isAnsweringOrderOffer || isProactivePurchaseIntent)
+  ) {
+    const rawReplyForCheck = extractReply(response);
+    if (FALSE_ORDER_CLAIM_PATTERN.test(rawReplyForCheck)) {
+      const candidates = productContextForFallback || [];
+      orderClarifyReply =
+        candidates.length > 1
+          ? `Dạ bên em thấy có vài mẫu khớp với yêu cầu của anh/chị (${candidates
+              .slice(0, 4)
+              .map((p) => p.name)
+              .join(", ")}) — anh/chị xác nhận giúp em muốn chốt đúng mẫu nào để em lên đơn chính xác nhé?`
+          : "Dạ anh/chị cho em xác nhận lại giúp tên/mẫu cụ thể muốn chốt để em lên đơn chính xác nhé?";
+    }
+  }
+
+  // AI vẫn hay tự khẳng định CÒN HÀNG/HẾT HÀNG dựa vào trường stock=0 (giá trị mặc định khi
+  // chưa nhập tồn kho thật, không đáng tin — xem rule 3f) — dù đã nhắc trong prompt vẫn không tuân
+  // thủ 100%. An toàn phía server: nếu lượt này có tra sản phẩm thật (searchProducts) nhưng KHÔNG
+  // tra thêm tri thức công ty để có căn cứ xác nhận (searchCompanyKnowledge), và câu trả lời có
+  // khẳng định còn/hết hàng cho đúng sản phẩm đang bàn (stock=0) — ghi đè bằng câu trả lời mập mờ an toàn.
+  const STOCK_ASSERTION_PATTERN =
+    /(còn hàng|còn nhiều mẫu|có sẵn hàng|luôn có sẵn|luôn có hàng|hết hàng|tạm hết hàng|không còn hàng|hết kho|sẵn hàng)/i;
+  let stockHedgeReply = null;
+  if (!orderFallbackReply && !orderClarifyReply && lastSearchedProducts.length > 0) {
+    const usedKnowledgeThisTurn = toolCallLog.some((t) => t.name === "searchCompanyKnowledge");
+    const rawReplyForStockCheck = extractReply(response);
+    if (!usedKnowledgeThisTurn && STOCK_ASSERTION_PATTERN.test(rawReplyForStockCheck)) {
+      const discussedProduct = pickBestProductMatch(lastSearchedProducts, message);
+      if (discussedProduct && discussedProduct.stock === 0) {
+        stockHedgeReply =
+          `Dạ về tồn kho cụ thể của ${discussedProduct.name}, em xin phép không khẳng định chắc chắn ngay được — ` +
+          "anh/chị để lại SĐT và khu vực để chuyên viên kiểm tra kho và xác nhận chính xác nhé!";
+      }
+    }
+  }
+
+  const reply = orderFallbackReply || orderClarifyReply || stockHedgeReply || extractReply(response);
   const segments = splitIntoSegments(reply);
 
   if (persist) {

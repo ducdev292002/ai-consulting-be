@@ -46,48 +46,59 @@ export function buildSalesTools({ companyId, customerKey }) {
         required: [],
       },
       run: async ({ keyword, maxPrice, minPrice }) => {
-        const filter = { companyId };
-        const andClauses = [];
+        const words = (keyword || "")
+          .trim()
+          .split(/\s+/)
+          .filter((w) => w.length > 1);
+        const fields = ["name", "category", "material", "description"];
 
-        // Khách nói tự nhiên (VD "sofa bò cao cấp") hiếm khi khớp NGUYÊN VĂN với tên/danh mục/
-        // chất liệu sản phẩm trong hệ thống — nếu chỉ so khớp cả cụm sẽ ra 0 kết quả rất thường
-        // xuyên (ảnh hưởng dây chuyền: không có productId thật để gọi getProductDetail/tạo đơn/
-        // gửi ảnh). Nên khớp theo TỪNG TỪ có nghĩa (OR), khớp cả trường description, để tìm ra
-        // đúng sản phẩm ngay cả khi khách không dùng đúng thuật ngữ trong hệ thống.
-        if (keyword?.trim()) {
-          const words = keyword
-            .trim()
-            .split(/\s+/)
-            .filter((w) => w.length > 1);
-          const fields = ["name", "category", "material", "description"];
-          const orClauses = [];
-          for (const word of words.length ? words : [keyword.trim()]) {
-            const re = new RegExp(escapeRegex(word), "i");
-            for (const field of fields) orClauses.push({ [field]: re });
-          }
-          andClauses.push({ $or: orClauses });
-        }
-
-        // Rất nhiều sản phẩm không có giá niêm yết sẵn (price=0, báo giá theo yêu cầu) — lọc
-        // theo ngân sách TUYỆT ĐỐI không được loại các sản phẩm này ra, nếu không lọc giá sẽ
-        // luôn trả về rỗng cho toàn bộ danh mục kiểu báo giá riêng.
-        // So ngân sách với GIÁ THỰC TẾ khách phải trả (priceAfterDiscount nếu có, không thì price)
-        // — không được so với giá gốc price khi đang có khuyến mãi, nếu không sản phẩm đang giảm
-        // giá về đúng tầm ngân sách khách sẽ bị lọc mất oan (giá gốc cao hơn ngân sách dù giá bán
-        // thực tế đã nằm trong tầm).
-        if (maxPrice || minPrice) {
+        const priceClause = (() => {
+          if (!maxPrice && !minPrice) return null;
           const effectivePrice = { $ifNull: ["$priceAfterDiscount", "$price"] };
           const cmp = [];
           if (maxPrice) cmp.push({ $lte: [effectivePrice, maxPrice] });
           if (minPrice) cmp.push({ $gte: [effectivePrice, minPrice] });
-          andClauses.push({
-            $or: [{ price: 0 }, { $expr: cmp.length > 1 ? { $and: cmp } : cmp[0] }],
-          });
+          return { $or: [{ price: 0 }, { $expr: cmp.length > 1 ? { $and: cmp } : cmp[0] }] };
+        })();
+
+        const runQuery = (keywordClause) => {
+          const andClauses = [];
+          if (keywordClause) andClauses.push(keywordClause);
+          if (priceClause) andClauses.push(priceClause);
+          const filter = andClauses.length ? { companyId, $and: andClauses } : { companyId };
+          return Product.find(filter).limit(10).lean();
+        };
+
+        let products = [];
+        if (words.length > 0) {
+          // Ưu tiên khớp CHẶT: sản phẩm phải chứa ĐỦ TẤT CẢ các từ khoá có nghĩa (mỗi từ khớp ở
+          // bất kỳ trường nào). Khi khách nói tên riêng cụ thể (VD "giường Nola"), cách này tránh
+          // trả về hàng chục sản phẩm chỉ khớp 1 từ chung chung (VD toàn bộ sản phẩm có chữ
+          // "giường") — vốn khiến AI/lớp an toàn tạo đơn không xác định được ĐÚNG 1 sản phẩm.
+          const strictClause = {
+            $and: words.map((word) => {
+              const re = new RegExp(escapeRegex(word), "i");
+              return { $or: fields.map((field) => ({ [field]: re })) };
+            }),
+          };
+          products = await runQuery(strictClause);
         }
 
-        if (andClauses.length) filter.$and = andClauses;
+        if (products.length === 0) {
+          // Khách nói tự nhiên (VD "sofa bò cao cấp") hiếm khi khớp NGUYÊN VĂN với tên/danh mục/
+          // chất liệu sản phẩm trong hệ thống — nếu khớp chặt ra rỗng, nới lỏng về khớp TỪNG TỪ
+          // (OR) để vẫn tìm ra sản phẩm gần đúng thay vì báo "không có" oan.
+          const relaxedClause = words.length
+            ? {
+                $or: words.flatMap((word) => {
+                  const re = new RegExp(escapeRegex(word), "i");
+                  return fields.map((field) => ({ [field]: re }));
+                }),
+              }
+            : null;
+          products = await runQuery(relaxedClause);
+        }
 
-        const products = await Product.find(filter).limit(10).lean();
         return { count: products.length, products: products.map(formatProduct) };
       },
     },
