@@ -35,7 +35,11 @@ export function buildSalesTools({ companyId, customerKey }) {
       parameters: {
         type: "object",
         properties: {
-          keyword: { type: "string", description: "Từ khoá tên sản phẩm hoặc ngành hàng, VD: sofa, giường" },
+          keyword: {
+            type: "string",
+            description:
+              "Từ khoá tên sản phẩm/dịch vụ hoặc ngành hàng ĐÚNG với lĩnh vực kinh doanh thật của công ty đang tư vấn (lấy từ chính lời khách nói hoặc từ dữ liệu công ty, không dùng ví dụ ngành hàng khác không liên quan).",
+          },
           maxPrice: { type: "number", description: "Ngân sách tối đa của khách (VNĐ)" },
           minPrice: { type: "number", description: "Ngân sách tối thiểu (VNĐ)" },
         },
