@@ -177,6 +177,15 @@ async function generateAiReply({
       "anh/chị để lại số điện thoại để bên em cử nhân viên tư vấn trực tiếp hỗ trợ kỹ hơn nhé' — phải nói rõ " +
       "mình LÀ AI, không được né tránh cụm này. Không lặp lại y nguyên các câu đã nói trước đó.";
   }
+  // Chỉ mô tả "đã biết SĐT: ..." trong phiếu khách (buildInstructions) là chưa đủ để AI không hỏi
+  // lại — thực tế vẫn thấy AI hỏi lại SĐT dù đã có. Thêm 1 chỉ dẫn BẮT BUỘC, trực tiếp, riêng cho
+  // lượt này khi đã có SĐT, thay vì chỉ liệt kê chung trong phiếu khách.
+  if (lead?.phone) {
+    instructions +=
+      `\n\nCHÚ Ý BẮT BUỘC: khách ĐÃ cung cấp số điện thoại (${lead.phone}) rồi — TUYỆT ĐỐI KHÔNG được hỏi xin ` +
+      "số điện thoại lại trong câu trả lời này (dù dưới hình thức nào: 'để lại SĐT giúp em', 'cho em xin số " +
+      "điện thoại'...). Chỉ được nhắc tới việc xin SĐT nếu khách tự nói muốn để lại/đổi số khác.";
+  }
   const { definitions, runByName } = buildSalesTools({ companyId, customerKey: key });
 
   const tools = definitions.map((t) => ({
